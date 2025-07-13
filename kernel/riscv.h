@@ -182,7 +182,7 @@ w_mtvec(uint64 x)
 }
 
 // use riscv's sv39 page table scheme.
-#define SATP_SV39 (8L << 60)
+#define SATP_SV39 (8L << 60) // 0x8000000000000000    8代表Sv39     9-Sv48
 
 #define MAKE_SATP(pagetable) (SATP_SV39 | (((uint64)pagetable) >> 12))
 
@@ -323,10 +323,10 @@ sfence_vma()
 #define PGSIZE 4096 // bytes per page
 #define PGSHIFT 12  // bits of offset within a page
 
-#define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1))
-#define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
+#define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1)) // 向上对齐
+#define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1)) // a & 0xFFFFF000 (与完的结果就是低12位为0, 2^12=4096)，将地址 a 向下取整为页大小 PGSIZE 的整数倍，即对齐到页的起始地址。
 
-#define PTE_V (1L << 0) // valid
+#define PTE_V (1L << 0) // valid 0x0000000000000001
 #define PTE_R (1L << 1)
 #define PTE_W (1L << 2)
 #define PTE_X (1L << 3)
@@ -342,13 +342,14 @@ sfence_vma()
 // extract the three 9-bit page table indices from a virtual address.
 #define PXMASK          0x1FF // 9 bits
 #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
-#define PX(level, va) ((((uint64) (va)) >> PXSHIFT(level)) & PXMASK)
+#define PX(level, va) ((((uint64) (va)) >> PXSHIFT(level)) & PXMASK) // PX(level, va)：从虚拟地址 va 中提取第 level 级页表的索引值
 
 // one beyond the highest possible virtual address.
 // MAXVA is actually one bit less than the max allowed by
 // Sv39, to avoid having to sign-extend virtual addresses
 // that have the high bit set.
-#define MAXVA (1L << (9 + 9 + 9 + 12 - 1))
+// [0x0000000000 ~ 0x3FFFFFFFFF]  // 256GB 虚拟地址空间
+#define MAXVA (1L << (9 + 9 + 9 + 12 - 1)) // MAXVA = (1L << 38) = 274877906944 (十进制) = 0x4000000000    Sv39 虚拟地址结构,只用虚拟地址的低39位
 
 typedef uint64 pte_t;
 typedef uint64 *pagetable_t; // 512 PTEs

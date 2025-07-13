@@ -70,13 +70,13 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
+  acquire(&kmem.lock); // 上锁，防止并发线程同时修改空闲内存链表。
   r = kmem.freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    kmem.freelist = r->next; // 从空闲页链表头 kmem.freelist 中取出一页内存。
+  release(&kmem.lock); // 解锁，允许其他线程访问空闲页链表。
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+  if(r)                 // PGSIZE = 4096
+    memset((char*)r, 5, PGSIZE); // fill with junk  将这页内存的每个字节都填充为 0x05，总共填充一整页（通常是 4KB = 4096）。
   return (void*)r;
 }
