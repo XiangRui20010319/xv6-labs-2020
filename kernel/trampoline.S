@@ -8,10 +8,10 @@
 	# kernel.ld causes this to be aligned
         # to a page boundary.
         #
-	.section trampsec
-.globl trampoline
+	.section trampsec # 指定当前汇编代码属于名为 trampsec 的段（section）
+.globl trampoline # 表示 trampoline 标签是全局可见的符号，可供其他 .c 文件或汇编模块引用。
 trampoline:
-.align 4
+.align 4 # 表示 按 2⁴ = 16 字节对齐（4 是幂）。
 .globl uservec
 uservec:    
 	#
@@ -26,10 +26,10 @@ uservec:
         
 	# swap a0 and sscratch
         # so that a0 is TRAPFRAME
-        csrrw a0, sscratch, a0
+        csrrw a0, sscratch, a0 # 原sscratch的值被保存到 a0, sscratch ← 原a0的值
 
         # save the user registers in TRAPFRAME
-        sd ra, 40(a0)
+        sd ra, 40(a0) # 将寄存器 ra（return address，返回地址）的值存储到由 a0 + 40 所表示的内存地址中。
         sd sp, 48(a0)
         sd gp, 56(a0)
         sd tp, 64(a0)
@@ -61,11 +61,11 @@ uservec:
         sd t6, 280(a0)
 
 	# save the user a0 in p->trapframe->a0
-        csrr t0, sscratch
-        sd t0, 112(a0)
+        csrr t0, sscratch # 从 sscratch 中读取 64 位的值，并存入通用寄存器 t0 中。
+        sd t0, 112(a0) # 将寄存器 t0 中的 64 位数据（即一个 uint64），存储到内存地址 a0 + 112 中。
 
         # restore kernel stack pointer from p->trapframe->kernel_sp
-        ld sp, 8(a0)
+        ld sp, 8(a0) # 从内存地址 a0 + 8 处读取一个 64 位的值，加载到寄存器 sp（堆栈指针）中。
 
         # make tp hold the current hartid, from p->trapframe->kernel_hartid
         ld tp, 32(a0)
@@ -75,14 +75,14 @@ uservec:
 
         # restore kernel page table from p->trapframe->kernel_satp
         ld t1, 0(a0)
-        csrw satp, t1
-        sfence.vma zero, zero
+        csrw satp, t1 # 将寄存器 t1 的值写入到控制状态寄存器 satp 中。
+        sfence.vma zero, zero #  刷新 TLB
 
         # a0 is no longer valid, since the kernel page
         # table does not specially map p->tf.
 
         # jump to usertrap(), which does not return
-        jr t0
+        jr t0 # Jump to the address stored in寄存器 t0 中，即跳转到 t0 指定的地址并开始执行。
 
 .globl userret
 userret:
