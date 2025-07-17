@@ -10,16 +10,38 @@
 #define STACK_SIZE  8192
 #define MAX_THREAD  4
 
+// 线程切换需要保存的寄存器
+struct context {
+    uint64 ra;
+    uint64 sp;
+
+    // callee-saved
+    uint64 s0;
+    uint64 s1;
+    uint64 s2;
+    uint64 s3;
+    uint64 s4;
+    uint64 s5;
+    uint64 s6;
+    uint64 s7;
+    uint64 s8;
+    uint64 s9;
+    uint64 s10;
+    uint64 s11;
+};
+
 
 struct thread {
   char       stack[STACK_SIZE]; /* the thread's stack */
   int        state;             /* FREE, RUNNING, RUNNABLE */
-
+  struct     context context;   // 在线程结构体中添加 context 结构体
 };
-struct thread all_thread[MAX_THREAD];
+struct thread all_thread[MAX_THREAD]; // 线程数组
 struct thread *current_thread;
-extern void thread_switch(uint64, uint64);
+// extern void thread_switch(uint64, uint64);
+extern void thread_switch(struct context* old, struct context* new);
               
+// 初始化线程系统中的主线程
 void 
 thread_init(void)
 {
@@ -27,11 +49,14 @@ thread_init(void)
   // thread_schedule().  it needs a stack so that the first thread_switch() can
   // save thread 0's state.  thread_schedule() won't run the main thread ever
   // again, because its state is set to RUNNING, and thread_schedule() selects
-  // a RUNNABLE thread.
-  current_thread = &all_thread[0];
-  current_thread->state = RUNNING;
+  // a RUNNABLE thread. 
+  current_thread = &all_thread[0]; // 当前线程指向 all_thread[0]为主线程
+  current_thread->state = RUNNING; // 状态
 }
 
+// 线程调度器
+// 选择一个处于 RUNNABLE 状态的线程，并进行上下文切换（thread_switch）
+// 如果没有线程可运行，退出; 如果找到新线程，就切换当前线程上下文; 如果当前线程就是可运行的唯一线程，什么也不做
 void 
 thread_schedule(void)
 {
@@ -50,19 +75,20 @@ thread_schedule(void)
     t = t + 1;
   }
 
-  if (next_thread == 0) {
+  if (next_thread == 0) { // 没找到runnable
     printf("thread_schedule: no runnable threads\n");
     exit(-1);
   }
 
   if (current_thread != next_thread) {         /* switch threads?  */
     next_thread->state = RUNNING;
-    t = current_thread;
-    current_thread = next_thread;
+    t = current_thread;                        // 保存当前线程为 t
+    current_thread = next_thread;              // 更新 current_thread 为新线程
     /* YOUR CODE HERE
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
+    thread_switch(&t->context, &next_thread->context);		//加上
   } else
     next_thread = 0;
 }
@@ -77,17 +103,23 @@ thread_create(void (*func)())
   }
   t->state = RUNNABLE;
   // YOUR CODE HERE
+  
+  // 返回地址,thread_switch线程切换执行完后返回到ra，设置成线程函数func，就可以切换后执行func
+  t->context.ra = (uint64)func;
+
+  // 栈指针，将线程的栈指针指向其独立的栈，栈的生长是从高地址到低地址，所以要将 sp 设置为指向 stack 的最高地址
+  t->context.sp = (uint64)&t->stack + (STACK_SIZE - 1);
 }
 
 void 
 thread_yield(void)
 {
   current_thread->state = RUNNABLE;
-  thread_schedule();
+  thread_schedule(); // 调用调度器切换到其他线程
 }
 
-volatile int a_started, b_started, c_started;
-volatile int a_n, b_n, c_n;
+volatile int a_started, b_started, c_started; // 表示对应线程是否启动(0 or 1)，volatile表示它的值可能被多个线程、硬件设备或中断程序修改。
+volatile int a_n, b_n, c_n; // 线程内部的计数变量，统计循环次数。
 
 void 
 thread_a(void)
@@ -95,8 +127,8 @@ thread_a(void)
   int i;
   printf("thread_a started\n");
   a_started = 1;
-  while(b_started == 0 || c_started == 0)
-    thread_yield();
+  while(b_started == 0 || c_started == 0) // 循环等待 b 和 c 线程也启动完成
+    thread_yield(); // 等待期间调用 thread_yield() 让出 CPU, 当前线程无法继续干活，但也不想一直“霸占 CPU”。
   
   for (i = 0; i < 100; i++) {
     printf("thread_a %d\n", i);

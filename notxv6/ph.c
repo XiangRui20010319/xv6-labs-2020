@@ -8,6 +8,8 @@
 #define NBUCKET 5
 #define NKEYS 100000
 
+pthread_mutex_t lock[NBUCKET]; // 声明一个线程锁
+
 struct entry {
   int key;
   int value;
@@ -35,10 +37,17 @@ insert(int key, int value, struct entry **p, struct entry *n)
   *p = e;
 }
 
+/*
+put相当于写操作，get相当于读操作。在多线程环境中，读写操作一般都是并发进行的，在读操作中也是会发生写操作的，为了确保数据一致性和线程安全，读操作也需要加锁。
+在这个实验中，main函数里get操作是在put操作结束后才执行的，即可以保证，get执行的时候不会有线程执行put操作共享数据所以这里可以不用给qet加锁。
+但为了保持良好的线程编程思想，最好还是加上锁。
+*/
 static 
 void put(int key, int value)
 {
   int i = key % NBUCKET;
+
+  pthread_mutex_lock(&lock[i]); // 获取锁
 
   // is the key already present?
   struct entry *e = 0;
@@ -53,6 +62,8 @@ void put(int key, int value)
     // the new is new.
     insert(key, value, &table[i], table[i]);
   }
+
+  pthread_mutex_unlock(&lock[i]); // 释放锁
 }
 
 static struct entry*
@@ -102,6 +113,7 @@ main(int argc, char *argv[])
   pthread_t *tha;
   void *value;
   double t1, t0;
+  // pthread_mutex_init(&lock, NULL);
 
   if (argc < 2) {
     fprintf(stderr, "Usage: %s nthreads\n", argv[0]);
@@ -115,6 +127,9 @@ main(int argc, char *argv[])
     keys[i] = random();
   }
 
+  for (int i = 0;i < NBUCKET;++i){				//在执行put前初始化锁
+    pthread_mutex_init(&lock[i], NULL);
+  }
   //
   // first the puts
   //
