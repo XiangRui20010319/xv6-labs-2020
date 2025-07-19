@@ -46,7 +46,7 @@ holdingsleep(struct sleeplock *lk)
   int r;
   
   acquire(&lk->lk);
-  r = lk->locked && (lk->pid == myproc()->pid);
+  r = lk->locked && (lk->pid == myproc()->pid); // 如果两个条件都成立，说明当前进程确实持有该睡眠锁
   release(&lk->lk);
   return r;
 }
