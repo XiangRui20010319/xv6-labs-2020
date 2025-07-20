@@ -116,6 +116,10 @@ sys_fstat(void)
 }
 
 // Create the path new as a link to the same inode as old.
+/*
+sys_link() 会让一个新的路径 new 指向和已有文件 old 相同的 inode，
+从而实现 硬链接：两个路径指向同一个底层数据。
+*/
 uint64
 sys_link(void)
 {
@@ -238,6 +242,16 @@ bad:
   return -1;
 }
 
+/*
+create() 创建一个新文件或目录，并将它挂到路径对应的目录中。
+它处理 inode 分配、初始化、. / .. 条目创建等底层细节。
+
+path：要创建的路径，比如 /a/b.txt
+
+type：文件类型，T_FILE、T_DIR、T_DEVICE
+
+major/minor：用于设备文件，普通文件无视
+*/
 static struct inode*
 create(char *path, short type, short major, short minor)
 {
@@ -283,6 +297,100 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+/*
+sys_open() 根据路径和模式（读/写/创建等）打开一个文件或设备，准备好对应的 struct file 和 inode，然后返回文件描述符 fd。
+sys_open(path, omode)
+│
+├── 获取路径、模式参数
+│
+├── begin_op() 开始日志事务
+│
+├── 是否是 O_CREATE？
+│   ├── 是 → create() 创建文件
+│   └── 否 → namei() 查找已有文件
+│
+├── 不允许写目录？
+├── 非法设备文件？
+│
+├── filealloc() 分配 struct file
+├── fdalloc() 分配文件描述符
+│
+├── 设置 file 各项字段
+├── 是否需要截断内容？
+│
+├── iunlock()
+└── end_op()
+    ↓
+   返回 fd
+*/
+// uint64
+// sys_open(void)
+// {
+//   char path[MAXPATH];
+//   int fd, omode;
+//   struct file *f;
+//   struct inode *ip;
+//   int n;
+
+//   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
+//     return -1;
+
+//   begin_op();
+
+//   if(omode & O_CREATE){
+//     ip = create(path, T_FILE, 0, 0);
+//     if(ip == 0){
+//       end_op();
+//       return -1;
+//     }
+//   } else {
+//     if((ip = namei(path)) == 0){
+//       end_op();
+//       return -1;
+//     }
+//     ilock(ip);
+//     if(ip->type == T_DIR && omode != O_RDONLY){
+//       iunlockput(ip);
+//       end_op();
+//       return -1;
+//     }
+//   }
+
+//   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+//     iunlockput(ip);
+//     end_op();
+//     return -1;
+//   }
+
+//   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+//     if(f)
+//       fileclose(f);
+//     iunlockput(ip);
+//     end_op();
+//     return -1;
+//   }
+
+//   if(ip->type == T_DEVICE){
+//     f->type = FD_DEVICE;
+//     f->major = ip->major;
+//   } else {
+//     f->type = FD_INODE;
+//     f->off = 0;
+//   }
+//   f->ip = ip;
+//   f->readable = !(omode & O_WRONLY);
+//   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+//   if((omode & O_TRUNC) && ip->type == T_FILE){
+//     itrunc(ip);
+//   }
+
+//   iunlock(ip);
+//   end_op();
+
+//   return fd;
+// }
+
 uint64
 sys_open(void)
 {
@@ -303,16 +411,37 @@ sys_open(void)
       end_op();
       return -1;
     }
-  } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
-    }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
-      iunlockput(ip);
-      end_op();
-      return -1;
+  }
+  else {
+      int symlink_depth = 0;
+      while (1) {
+          if ((ip = namei(path)) == 0) {    // 解析路径，获取对应的inode
+              end_op();
+              return -1;
+          }
+
+          ilock(ip);
+          if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {     //如果当前指向的仍是软链接，则继续循环
+              if (++symlink_depth > 10) {               // 链接深度超过10层就退出
+                  iunlockput(ip);
+                  end_op();
+                  return -1;
+              }
+              if (readi(ip, 0, (uint64)path, 0, MAXPATH) < 0) {     // 读取链接的目标路径
+                  iunlockput(ip);
+                  end_op();
+                  return -1;
+              }
+              iunlockput(ip);
+          }
+          else
+              break;
+      }
+
+      if (ip->type == T_DIR && omode != O_RDONLY){
+          iunlockput(ip);
+          end_op();
+          return -1;
     }
   }
 
@@ -351,6 +480,9 @@ sys_open(void)
   return fd;
 }
 
+/*
+创建一个新的目录（文件类型为 T_DIR），路径由用户传入
+*/
 uint64
 sys_mkdir(void)
 {
@@ -367,6 +499,24 @@ sys_mkdir(void)
   return 0;
 }
 
+/*
+根据给定的路径、major 和 minor 设备号，在文件系统中创建一个类型为 T_DEVICE 的设备文件。
+
+sys_mknod(path, major, minor)
+│
+├── begin_op() 开始日志事务
+│
+├── 获取参数 (path, major, minor)
+│
+├── 调用 create():
+│     └── 创建一个类型为 T_DEVICE 的 inode
+│     └── 设置其 major / minor 字段
+│     └── 加入目录项
+│
+├── 解锁并释放 inode（iunlockput）
+├── end_op() 提交日志事务
+└── 返回 0 表示成功
+*/
 uint64
 sys_mknod(void)
 {
@@ -387,6 +537,9 @@ sys_mknod(void)
   return 0;
 }
 
+/*
+把当前进程的工作目录（cwd）更改为用户传入路径所指向的目录。
+*/
 uint64
 sys_chdir(void)
 {
@@ -412,6 +565,20 @@ sys_chdir(void)
   return 0;
 }
 
+/*
+从用户空间读取路径 path 和参数数组 argv；
+加载一个新的可执行文件，替换当前进程的内存；
+如果成功，进程继续从新程序的 main() 开始运行；
+如果失败，则返回 -1。
+
+
+用户传入 exec("/bin/ls", ["ls", "-l", 0])
+↓ sys_exec 读取路径和参数
+↓ 依次将用户 argv 拷贝到内核内存
+↓ 调用 exec(path, argv)
+↓ 成功：不再返回（新程序开始执行）
+↓ 失败：释放内存，返回 -1
+*/
 uint64
 sys_exec(void)
 {
@@ -454,6 +621,21 @@ sys_exec(void)
   return -1;
 }
 
+/*
+该函数用于创建一个管道，使一个进程可以通过写端写入数据，另一个进程从读端读取数据，实现进程间通信（IPC）。
+
+
+用户空间:  int fd[2]; pipe(fd);
+↓ sys_pipe 被调用
+
+↓ 创建管道 → 得到 read_file, write_file
+↓ 分配 fd0 → 指向 read_file
+↓ 分配 fd1 → 指向 write_file
+↓ copyout(fd0) → 写入 fd[0]
+↓ copyout(fd1) → 写入 fd[1]
+
+返回 0，用户获得 fd[0] 读端, fd[1] 写端
+*/
 uint64
 sys_pipe(void)
 {
@@ -483,4 +665,32 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+// kernel/sysfile.c
+// 软链接
+uint64
+sys_symlink(void) {
+    struct inode* ip;
+    char target[MAXPATH], path[MAXPATH];
+    if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+        return -1;
+
+    begin_op();
+
+    ip = create(path, T_SYMLINK, 0, 0);     // 创建一个新的inode，类型为T_SYMLINK，指向path文件
+    if (ip == 0) {
+        end_op();
+        return -1;
+    }
+
+    if (writei(ip, 0, (uint64)target, 0, strlen(target)) < 0) {     // 将target路径写入inode
+        end_op();
+        return -1;
+    }
+
+    iunlockput(ip);
+    end_op();
+
+    return 0;
 }

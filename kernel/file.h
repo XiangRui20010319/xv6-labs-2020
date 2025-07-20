@@ -13,7 +13,7 @@ struct file {
 #define minor(dev)  ((dev) & 0xFFFF)
 #define	mkdev(m,n)  ((uint)((m)<<16| (n)))
 
-// in-memory copy of an inode
+// in-memory copy of an inode          struct inode 是磁盘上struct dinode的内存副本。
 struct inode {
   uint dev;           // Device number
   uint inum;          // Inode number
@@ -26,7 +26,8 @@ struct inode {
   short minor;
   short nlink;
   uint size;
-  uint addrs[NDIRECT+1];
+  // uint addrs[NDIRECT+1];
+  uint addrs[NDIRECT + 2];
 };
 
 // map major device number to device functions.

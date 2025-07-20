@@ -61,6 +61,9 @@ bzero(int dev, int bno)
 // Blocks.
 
 // Allocate a zeroed disk block.
+/*
+balloc() 是文件系统中的磁盘块分配器，通过扫描 bitmap 找到一个空闲块，标记为已使用，清零后返回。
+*/
 static uint
 balloc(uint dev)
 {
@@ -68,15 +71,15 @@ balloc(uint dev)
   struct buf *bp;
 
   bp = 0;
-  for(b = 0; b < sb.size; b += BPB){
-    bp = bread(dev, BBLOCK(b, sb));
-    for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
-      m = 1 << (bi % 8);
+  for(b = 0; b < sb.size; b += BPB){  // BPB 是每个位图块能记录多少个数据块，按块遍历
+    bp = bread(dev, BBLOCK(b, sb));   // BBLOCK(b, sb) 表示第 b 个块在哪个 bitmap 块中（即：哪个块记录它的状态）。读取当前 bitmap 块
+    for(bi = 0; bi < BPB && b + bi < sb.size; bi++){ // 遍历这个 bitmap 块中记录的每个 bit，按位遍历
+      m = 1 << (bi % 8); // m 是 mask，用于检测这个 bit 是否为 0。(bi/8) 表示这个 bit 在第几个字节上。
       if((bp->data[bi/8] & m) == 0){  // Is block free?
         bp->data[bi/8] |= m;  // Mark block in use.
-        log_write(bp);
-        brelse(bp);
-        bzero(dev, b + bi);
+        log_write(bp);        // 通过 log_write() 将 bitmap 的更改记录到日志中。
+        brelse(bp);           // brelse() 表示释放对缓存块的使用权。
+        bzero(dev, b + bi);   // 清除新分配的块内容（全部置 0）。
         return b + bi;
       }
     }
@@ -98,7 +101,7 @@ bfree(int dev, uint b)
   if((bp->data[bi/8] & m) == 0)
     panic("freeing free block");
   bp->data[bi/8] &= ~m;
-  log_write(bp);
+  log_write(bp); // 将更新过的缓冲区 bp 写入日志系统，确保修改不会因为异常而丢失。
   brelse(bp);
 }
 
@@ -218,6 +221,9 @@ ialloc(uint dev, short type)
 // Must be called after every change to an ip->xxx field
 // that lives on disk, since i-node cache is write-through.
 // Caller must hold ip->lock.
+/*
+把内存中的 inode 改动“同步”到磁盘中的 inode 表中（写回）。
+*/
 void
 iupdate(struct inode *ip)
 {
@@ -343,9 +349,9 @@ iput(struct inode *ip)
 
     release(&icache.lock);
 
-    itrunc(ip);
+    itrunc(ip);     // 清空内容
     ip->type = 0;
-    iupdate(ip);
+    iupdate(ip);   // 将改动同步到磁盘中，更新
     ip->valid = 0;
 
     releasesleep(&ip->lock);
@@ -374,38 +380,137 @@ iunlockput(struct inode *ip)
 
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
+/*
+把文件中的“逻辑块编号”映射到磁盘上的“物理块号”。
+*/
+// static uint
+// bmap(struct inode *ip, uint bn)
+// {
+//   uint addr, *a;
+//   struct buf *bp;
+
+//   if(bn < NDIRECT){
+//     if((addr = ip->addrs[bn]) == 0)
+//       ip->addrs[bn] = addr = balloc(ip->dev);
+//     return addr;
+//   }
+//   bn -= NDIRECT; // 否则说明进入间接块范围,逻辑编号从 NDIRECT 开始是间接块；
+
+//   if(bn < NINDIRECT){
+//     // Load indirect block, allocating if necessary.
+//     if((addr = ip->addrs[NDIRECT]) == 0)
+//       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+//     bp = bread(ip->dev, addr); // 读取这个间接块（磁盘上一个数据块），它里面存的是若干个 uint 类型的块地址。
+//     a = (uint*)bp->data;       // 转换成地址数组
+//     if((addr = a[bn]) == 0){
+//       a[bn] = addr = balloc(ip->dev);
+//       log_write(bp);
+//     }
+//     brelse(bp);
+//     return addr;
+//   }
+
+//   panic("bmap: out of range");
+// }
+
 static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
   struct buf *bp;
 
+  // 如果bn小于直接块数量，则按直接映射处理
   if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0)
+    if((addr = ip->addrs[bn]) == 0)				// 如果对应的物理块号为0，表示还没分配，则分配一个新的物理块，建立映射
       ip->addrs[bn] = addr = balloc(ip->dev);
     return addr;
   }
+    
+  // 到这里已经是一级间接块了，减去直接块的数量得到间接块的逻辑块号
   bn -= NDIRECT;
 
   if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0)
-      ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+    // 如果间接块还没分配，分配一个
+    if((addr = ip->addrs[NDIRECT]) == 0)			// 0~NDIRECT-1是直接块，NDIRECT是间接块
+      ip->addrs[NDIRECT] = addr = balloc(ip->dev);	// 此时这个块可以映射256个块
+      
+    // 获取刚分配的缓存块，检查bn对应的块，如果为0则没有分配，建立映射
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     if((addr = a[bn]) == 0){
       a[bn] = addr = balloc(ip->dev);
       log_write(bp);
     }
-    brelse(bp);
+    brelse(bp);			// 建立映射结束，释放掉缓存块（可以通过ip->dev和bn找到这个块了）
     return addr;
+  }
+
+  // 到这里已经是二级间接块了，减去一级间接块的数量得到二级件结块的逻辑块号
+  bn -= NINDIRECT;
+
+  // 原理很上面的一样
+  if (bn < NINDIRECT * NINDIRECT) {
+      if ((addr = ip->addrs[NDIRECT + 1]) == 0)
+          ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+
+      bp = bread(ip->dev, addr);
+      a = (uint*)bp->data;
+      if ((addr = a[bn / NINDIRECT]) == 0) {        // bn处在二级索引中间级的第 bn/NINDIRECT 个索引处
+          a[bn / NINDIRECT] = addr = balloc(ip->dev);
+          log_write(bp);
+      }
+      brelse(bp);
+
+      // 最后一级索引
+      bn %= NINDIRECT;
+      bp = bread(ip->dev, addr);
+      a = (uint*)bp->data;
+      if ((addr = a[bn]) == 0) {
+          a[bn] = addr = balloc(ip->dev);
+          log_write(bp);
+      }
+      brelse(bp);
+      return addr;
   }
 
   panic("bmap: out of range");
 }
 
 // Truncate inode (discard contents).
-// Caller must hold ip->lock.
+// Caller must hold ip->lock.、
+/*
+清空一个 inode（即删除文件的全部内容），释放它占用的所有磁盘块。
+*/
+// void
+// itrunc(struct inode *ip)
+// {
+//   int i, j;
+//   struct buf *bp;
+//   uint *a;
+
+//   for(i = 0; i < NDIRECT; i++){
+//     if(ip->addrs[i]){
+//       bfree(ip->dev, ip->addrs[i]);
+//       ip->addrs[i] = 0;
+//     }
+//   }
+
+//   if(ip->addrs[NDIRECT]){
+//     bp = bread(ip->dev, ip->addrs[NDIRECT]);
+//     a = (uint*)bp->data;
+//     for(j = 0; j < NINDIRECT; j++){
+//       if(a[j])
+//         bfree(ip->dev, a[j]);
+//     }
+//     brelse(bp);
+//     bfree(ip->dev, ip->addrs[NDIRECT]);
+//     ip->addrs[NDIRECT] = 0;
+//   }
+
+//   ip->size = 0;
+//   iupdate(ip);
+// }
+
 void
 itrunc(struct inode *ip)
 {
@@ -413,14 +518,16 @@ itrunc(struct inode *ip)
   struct buf *bp;
   uint *a;
 
-  for(i = 0; i < NDIRECT; i++){
+  // 释放直接块的映射
+  for (i = 0; i < NDIRECT; i++) {
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
       ip->addrs[i] = 0;
     }
   }
 
-  if(ip->addrs[NDIRECT]){
+  // 释放一级间接块的映射
+  if (ip->addrs[NDIRECT]) {
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
     for(j = 0; j < NINDIRECT; j++){
@@ -430,6 +537,27 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // 释放二级间接块的映射
+  if (ip->addrs[NDIRECT + 1]) {
+      bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+      a = (uint*)bp->data;
+      for (int i = 0;i < NINDIRECT;++i) {
+          if (a[i]) {
+              struct buf* bp2 = bread(ip->dev, a[i]);
+              uint* a2 = (uint*)bp2->data;
+              for (int j = 0;j < NINDIRECT;++j) {
+                  if (a2[j])
+                      bfree(ip->dev, a2[j]);
+              }
+              brelse(bp2);
+              bfree(ip->dev, a[i]);
+          }
+      }
+      brelse(bp);
+      bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+      ip->addrs[NDIRECT + 1] = 0;
   }
 
   ip->size = 0;
@@ -452,6 +580,11 @@ stati(struct inode *ip, struct stat *st)
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+/*
+从 ip 指向的文件里，读取 n 字节，从偏移量 off 开始，读到 dst 指定的地址中（可能是用户态或内核态地址）。
+user_dst 标志位，是否是用户空间地址
+dst：目标地址，读出的数据放到这里。
+*/
 int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
@@ -465,8 +598,8 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
     bp = bread(ip->dev, bmap(ip, off/BSIZE));
-    m = min(n - tot, BSIZE - off%BSIZE);
-    if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
+    m = min(n - tot, BSIZE - off % BSIZE); // 这次最多可以读取多少字节；
+    if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {  // 把数据复制到 dst 处（用户空间或内核空间）,失败时返回 -1，表示内存非法或出错
       brelse(bp);
       tot = -1;
       break;
@@ -526,6 +659,10 @@ namecmp(const char *s, const char *t)
 
 // Look for a directory entry in a directory.
 // If found, set *poff to byte offset of entry.
+/*
+给定一个目录 dp 和一个文件名 name，在该目录中查找这个文件名是否存在。
+如果存在，返回该文件对应的 inode；否则返回 0。
+*/
 struct inode*
 dirlookup(struct inode *dp, char *name, uint *poff)
 {
@@ -553,6 +690,10 @@ dirlookup(struct inode *dp, char *name, uint *poff)
 }
 
 // Write a new directory entry (name, inum) into the directory dp.
+/*
+给一个目录 dp、一个文件名 name 和对应的 inode 编号 inum，
+在这个目录下新建一个目录项，实现目录下出现一个新的文件名的效果。
+*/
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -625,23 +766,33 @@ skipelem(char *path, char *name)
 // If parent != 0, return the inode for the parent and copy the final
 // path element into name, which must have room for DIRSIZ bytes.
 // Must be called inside a transaction since it calls iput().
+/*
+namex() 实现了 路径解析 + inode 查找 的功能，
+比如解析 /a/b/c 得到对应 inode，或者是 /a/b/c 的父目录 /a/b 对应的 inode。
+
+参数	        含义
+path	        要解析的路径，如 /a/b/c 或 docs/file.txt
+nameiparent	  若为 1，表示返回“路径的父目录 inode”，即 path 最后一段之前的 inode
+name	        输出参数，保存路径中的“最后一段”文件名，比如 c 或 file.txt
+返回值	       成功返回 inode 指针，失败返回 0
+*/
 static struct inode*
 namex(char *path, int nameiparent, char *name)
 {
   struct inode *ip, *next;
 
   if(*path == '/')
-    ip = iget(ROOTDEV, ROOTINO);
+    ip = iget(ROOTDEV, ROOTINO);  // 根目录
   else
-    ip = idup(myproc()->cwd);
+    ip = idup(myproc()->cwd);     // 当前进程的 cwd
 
-  while((path = skipelem(path, name)) != 0){
+  while((path = skipelem(path, name)) != 0){ // skipelem() 会把路径分成一段段的，比如 /a/b/c 拆成 "a", "b", "c"；name 用来保存当前这段名称
     ilock(ip);
-    if(ip->type != T_DIR){
+    if(ip->type != T_DIR){ // 当前 inode 必须是目录；
       iunlockput(ip);
       return 0;
     }
-    if(nameiparent && *path == '\0'){
+    if(nameiparent && *path == '\0'){ // 如果是想要找父目录，并且下一段就是最后一个了，则提前返回当前 inode
       // Stop one level early.
       iunlock(ip);
       return ip;

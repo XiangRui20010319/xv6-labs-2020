@@ -84,6 +84,9 @@ fileclose(struct file *f)
 
 // Get metadata about file f.
 // addr is a user virtual address, pointing to a struct stat.
+/*
+filestat() 获取文件 f 的 inode 元信息（如大小、设备号、链接数等），然后把它拷贝到用户提供的内存地址 addr 上。
+*/
 int
 filestat(struct file *f, uint64 addr)
 {
